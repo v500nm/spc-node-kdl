@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// Pull references to the console functions, because PM2 replaces the global console object after we start it
+// Preserve original console methods
 const {
   log: consoleLog,
   warn: consoleWarn,
@@ -11,71 +11,76 @@ const {
 } = console;
 
 /**
- * Flatten parameters of any type into a string
- * @param  {...any} params
+ * Absolute, fixed log directory (NOT user controlled)
+ */
+const BASE_LOG_DIR = path.resolve(__dirname, '../../logs');
+const LOG_FILE_NAME = 'service.log';
+const LOG_FILE_PATH = path.join(BASE_LOG_DIR, LOG_FILE_NAME);
+
+/**
+ * Ensure log directory exists
+ */
+if (!fs.existsSync(BASE_LOG_DIR)) {
+  fs.mkdirSync(BASE_LOG_DIR, { recursive: true });
+}
+
+/**
+ * Flatten parameters into safe string
  */
 function flatten(...params) {
-
-  const flattened = params.map(item => {
+  return params.map(item => {
 
     if (['string', 'boolean', 'number'].includes(typeof item)) {
       return item;
     }
 
     if (item instanceof Error) {
-
-      item = {
-        ...item,
+      return JSON.stringify({
         message: item.message,
         stack: item.stack,
         name: item.name
-      };
+      });
     }
 
     try {
-      return JSON.stringify(item, null, '  ');
-    } catch (error) {
+      return JSON.stringify(item);
+    } catch {
       return '[Unserializable object]';
     }
-  });
 
-  return flattened.join(' ');
+  }).join(' ');
 }
 
 /**
- * Write a message to the log file, if we can discern where the log file is supposed to be
- * @param {string} type - LOG, WARNING, or ERROR. Or anything else, really.
- * @param {boolean} date - whether to write the timestamp to the log file or not
- * @param  {...any} out
+ * Secure log writer
  */
 function write(type = 'LOG', date = true, ...out) {
 
-  const { PM2_SERVICE_DIRECTORY } = process.env;
+  let logEntry = '\n';
 
-  if (PM2_SERVICE_DIRECTORY === undefined || PM2_SERVICE_DIRECTORY === '') {
-    return;
-  }
-
-  const filepath = path.join(PM2_SERVICE_DIRECTORY, 'service.log');
-
-  let string = `\n`;
-
-  if (date === true) {
-    string += `${new Date().toLocaleString()}: `;
+  if (date) {
+    logEntry += `${new Date().toLocaleString()}: `;
   }
 
   if (type !== 'LOG') {
-    string += `${type}: `;
+    logEntry += `${type}: `;
   }
-  string += flatten(...out);
+
+  logEntry += flatten(...out);
 
   try {
-    fs.appendFileSync(filepath, string);
-  } catch (error) {
-    consoleError('Failed to write to log file:', error);
+    fs.appendFileSync(LOG_FILE_PATH, logEntry, {
+      encoding: 'utf8',
+      flag: 'a'
+    });
+  } catch (err) {
+    consoleError('Failed to write to log file:', err);
   }
 }
 
+/**
+ * Wrapped log methods
+ */
 const log = (...out) => {
   consoleLog('pm2-service:', ...out);
   write('LOG', true, ...out);
@@ -91,8 +96,9 @@ const error = (...out) => {
   write('ERROR', true, ...out);
 };
 
-// Replace the console functions so we can write output from pm2 to our log file as well
-
+/**
+ * Override console methods safely
+ */
 console.log = (...out) => {
   consoleLog(...out);
   write('LOG', false, ...out);
